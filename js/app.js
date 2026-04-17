@@ -87,6 +87,7 @@ const FAST_CONFIG = {
 const VOWELS = new Set(["a", "e", "i", "o", "u", "y"]);
 
 const playBtn = document.getElementById("play-btn");
+const audioCheckBtn = document.getElementById("audio-check-btn");
 const submitBtn = document.getElementById("submit-btn");
 const replayBtn = document.getElementById("replay-btn");
 const volumeSlider = document.getElementById("volume-slider");
@@ -98,6 +99,9 @@ const roundIndicator = document.getElementById("round-indicator");
 const speedIndicator = document.getElementById("speed-indicator");
 const scoreEl = document.getElementById("score");
 const tableBody = document.getElementById("mapping-table-body");
+const iosAudioWarning = document.getElementById("ios-audio-warning");
+
+const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 
 let audioCtx;
 let masterGain;
@@ -105,11 +109,13 @@ let droneGain;
 let droneOsc;
 let noiseNode;
 let noiseGain;
+let audioUnlocked = false;
 
 let isPlaying = false;
 let currentRound = 0;
 let score = 0;
 let prompts = [];
+let isAudioChecking = false;
 
 function midiToFreq(note) {
   const match = note.match(/^([A-G])(#{0,1})(\d)$/);
@@ -149,7 +155,12 @@ function initAudio() {
     return;
   }
 
-  audioCtx = new AudioContext();
+  if (!AudioContextClass) {
+    feedback.textContent = "Web Audio is not supported on this device/browser.";
+    throw new Error("Web Audio API unavailable");
+  }
+
+  audioCtx = new AudioContextClass();
 
   masterGain = audioCtx.createGain();
   masterGain.gain.value = parseInt(volumeSlider.value, 10) / 100;
@@ -168,6 +179,28 @@ function initAudio() {
   noiseNode.loop = true;
   noiseNode.connect(noiseGain);
   noiseNode.start();
+}
+
+async function ensureAudioReady() {
+  initAudio();
+
+  if (audioCtx.state !== "running") {
+    await audioCtx.resume();
+  }
+
+  if (!audioUnlocked) {
+    // iOS Safari sometimes needs a started source node during a user gesture
+    // before subsequent oscillators are audible.
+    const unlockBuffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+    const unlockSource = audioCtx.createBufferSource();
+    const unlockGain = audioCtx.createGain();
+    unlockGain.gain.value = 0.0001;
+    unlockSource.buffer = unlockBuffer;
+    unlockSource.connect(unlockGain);
+    unlockGain.connect(masterGain);
+    unlockSource.start(0);
+    audioUnlocked = true;
+  }
 }
 
 function startDrone() {
@@ -273,17 +306,10 @@ function scheduleSymbol(noteNames, startTime, duration) {
     osc.type = "triangle";
     osc.frequency.value = midiToFreq(noteName);
 
-    // 1. Start at 0
-    gain.gain.setValueAtTime(0, startTime);
-
-    // 2. Swell to peak volume
-    gain.gain.linearRampToValueAtTime(peakVolume, startTime + attack);
-
-    // 3. Sustain the note
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.exponentialRampToValueAtTime(peakVolume, startTime + attack);
     gain.gain.setValueAtTime(peakVolume, startTime + duration);
-
-    // 4. Graceful release fading out over time
-    gain.gain.linearRampToValueAtTime(0, startTime + duration + release);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration + release);
 
     osc.connect(gain);
     gain.connect(masterGain);
@@ -293,6 +319,55 @@ function scheduleSymbol(noteNames, startTime, duration) {
   });
 }
 
+function isLikelyIOS() {
+  const ua = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  const isIOSDevice = /iPad|iPhone|iPod/.test(ua) || /iPad|iPhone|iPod/.test(platform);
+  const isIpadOS = platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  return isIOSDevice || isIpadOS;
+}
+
+async function runAudioCheck() {
+  if (isPlaying || isAudioChecking) {
+    return;
+  }
+
+  isAudioChecking = true;
+  audioCheckBtn.disabled = true;
+  playBtn.disabled = true;
+  submitBtn.disabled = true;
+  feedback.textContent = "Running audio check...";
+
+  try {
+    await ensureAudioReady();
+  } catch (error) {
+    feedback.textContent = "Audio check failed to initialize. Try Safari and turn Silent Mode off.";
+    isAudioChecking = false;
+    audioCheckBtn.disabled = false;
+    playBtn.disabled = false;
+    submitBtn.disabled = false;
+    return;
+  }
+
+  const startTime = audioCtx.currentTime + 0.06;
+  startDrone();
+  scheduleSymbol(["C5"], startTime, 0.24);
+  scheduleSymbol(["E5"], startTime + 0.42, 0.24);
+  scheduleSymbol(["G5"], startTime + 0.84, 0.3);
+  stopDroneAt(startTime + 1.45);
+
+  setTimeout(() => {
+    if (noiseGain) {
+      noiseGain.gain.value = 0;
+    }
+    feedback.textContent = "Audio check complete. If you heard nothing, turn Silent Mode off and retry.";
+    isAudioChecking = false;
+    audioCheckBtn.disabled = false;
+    playBtn.disabled = false;
+    submitBtn.disabled = false;
+  }, 2200);
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -300,11 +375,11 @@ function wait(ms) {
 async function playPrompt() {
   if (isPlaying || currentRound >= prompts.length) return;
 
-  initAudio();
-
-  // AWAIT the resume so the audio hardware clock is accurate before scheduling
-  if (audioCtx.state === "suspended") {
-    await audioCtx.resume();
+  try {
+    await ensureAudioReady();
+  } catch (error) {
+    feedback.textContent = "Audio failed to initialize. Try Safari, disable Low Power Mode, and turn Silent Mode off.";
+    return;
   }
 
   isPlaying = true;
@@ -432,7 +507,20 @@ function populateTable() {
 if (!window.__ambientCodeInitialized) {
   window.__ambientCodeInitialized = true;
 
+  playBtn.addEventListener("touchstart", () => {
+    ensureAudioReady().catch(() => {});
+  }, { passive: true });
+  playBtn.addEventListener("pointerdown", () => {
+    ensureAudioReady().catch(() => {});
+  }, { passive: true });
+  audioCheckBtn.addEventListener("touchstart", () => {
+    ensureAudioReady().catch(() => {});
+  }, { passive: true });
+  audioCheckBtn.addEventListener("pointerdown", () => {
+    ensureAudioReady().catch(() => {});
+  }, { passive: true });
   playBtn.addEventListener("click", playPrompt);
+  audioCheckBtn.addEventListener("click", runAudioCheck);
   submitBtn.addEventListener("click", submitGuess);
   replayBtn.addEventListener("click", startTest);
   volumeSlider.addEventListener("input", () => {
@@ -449,5 +537,8 @@ if (!window.__ambientCodeInitialized) {
   });
 
   populateTable();
+  if (isLikelyIOS()) {
+    iosAudioWarning.hidden = false;
+  }
   startTest();
 }

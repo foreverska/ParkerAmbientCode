@@ -12,6 +12,14 @@ header p {
   max-width: 70ch;
 }
 
+.ios-audio-warning {
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--pico-del-color);
+  border-radius: var(--pico-border-radius);
+  background: color-mix(in srgb, var(--pico-del-color) 16%, transparent);
+  margin-bottom: 1rem;
+}
+
 .controls-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

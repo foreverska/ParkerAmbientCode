@@ -16,12 +16,18 @@
   <header>
     <h1>Ambient Code</h1>
     <p>Listen, copy what you hear, and submit your best guess. Each round has 10 items: 5 slow and 5 full-speed.</p>
+
+    <p>iPhone/iPad tip: if you hear no sound, turn Silent Mode off</p>
   </header>
 
   <section id="test-widget">
     <article>
       <h2>Copy Test</h2>
+      <p id="ios-audio-warning" class="ios-audio-warning" hidden>
+         Tap Audio Check to see if the sound works.
+      </p>
       <div class="controls-grid">
+        <button id="audio-check-btn" type="button" class="secondary">Audio Check</button>
         <button id="play-btn" type="button">Play Prompt</button>
 
         <label for="volume-slider">Volume
