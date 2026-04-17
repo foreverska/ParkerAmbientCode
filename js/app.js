@@ -297,11 +297,15 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function playPrompt() {
+async function playPrompt() {
   if (isPlaying || currentRound >= prompts.length) return;
 
   initAudio();
-  if (audioCtx.state === "suspended") audioCtx.resume();
+
+  // AWAIT the resume so the audio hardware clock is accurate before scheduling
+  if (audioCtx.state === "suspended") {
+    await audioCtx.resume();
+  }
 
   isPlaying = true;
   playBtn.disabled = true;
@@ -312,47 +316,59 @@ function playPrompt() {
   const item = prompts[currentRound];
   const config = item.speed === "slow" ? SLOW_CONFIG : FAST_CONFIG;
 
-  // Schedule the drone to start immediately
   startDrone();
 
-  // Start scheduling notes slightly in the future to ensure smooth playback
   let timeTracker = audioCtx.currentTime + 0.2;
+  let charIndex = 0;
 
-  for (const charRaw of item.text) {
-    const char = charRaw.toLowerCase();
+  // Lookahead scheduler: schedules notes in small chunks so mobile browsers don't drop events
+  function scheduleLookahead() {
+    if (!isPlaying) return;
 
-    if (char === " ") {
-      timeTracker += config.spaceDuration;
-      continue;
+    // Only schedule notes that fall within the next 0.5 seconds
+    const scheduleUntil = audioCtx.currentTime + 0.5;
+
+    while (charIndex < item.text.length && timeTracker < scheduleUntil) {
+      const charRaw = item.text[charIndex];
+      const char = charRaw.toLowerCase();
+      charIndex++;
+
+      if (char === " ") {
+        timeTracker += config.spaceDuration;
+        continue;
+      }
+
+      const mapped = SYMBOL_MAP[char];
+      if (!mapped) continue;
+
+      const charDuration = VOWELS.has(char) ? config.vowelDuration : config.charDuration;
+
+      scheduleSymbol(mapped, timeTracker, charDuration);
+      timeTracker += charDuration + config.gapDuration;
     }
 
-    const mapped = SYMBOL_MAP[char];
-    if (!mapped) continue;
+    if (charIndex < item.text.length) {
+      // Check the queue again in 50ms
+      setTimeout(scheduleLookahead, 50);
+    } else {
+      // Done scheduling the whole phrase. Stop drone and wait for final notes to finish.
+      stopDroneAt(timeTracker + 0.5);
 
-    const charDuration = VOWELS.has(char) ? config.vowelDuration : config.charDuration;
-
-    // Hand the precise start time to the audio hardware
-    scheduleSymbol(mapped, timeTracker, charDuration);
-
-    // Advance the clock for the next letter
-    timeTracker += charDuration + config.gapDuration;
+      const msUntilFinished = (timeTracker - audioCtx.currentTime + 1.0) * 1000;
+      setTimeout(() => {
+        if (!isPlaying) return;
+        if (noiseGain) noiseGain.gain.value = 0;
+        isPlaying = false;
+        playBtn.disabled = false;
+        submitBtn.disabled = false;
+        feedback.textContent = "Enter your guess and press Submit Guess.";
+        guessInput.focus();
+      }, msUntilFinished);
+    }
   }
 
-  // Schedule the drone to gracefully fade out after the last note finishes
-  stopDroneAt(timeTracker + 0.5);
-
-  // Use setTimeout ONLY to unlock the UI after the audio finishes playing
-  const msUntilFinished = (timeTracker - audioCtx.currentTime + 1.0) * 1000;
-
-  setTimeout(() => {
-    if (!isPlaying) return;
-    if (noiseGain) noiseGain.gain.value = 0;
-    isPlaying = false;
-    playBtn.disabled = false;
-    submitBtn.disabled = false;
-    feedback.textContent = "Enter your guess and press Submit Guess.";
-    guessInput.focus();
-  }, msUntilFinished);
+  // Kick off the scheduling loop
+  scheduleLookahead();
 }
 
 function submitGuess() {
