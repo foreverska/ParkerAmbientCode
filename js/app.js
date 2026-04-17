@@ -99,12 +99,15 @@ const speedIndicator = document.getElementById("speed-indicator");
 const scoreEl = document.getElementById("score");
 const tableBody = document.getElementById("mapping-table-body");
 
+const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+
 let audioCtx;
 let masterGain;
 let droneGain;
 let droneOsc;
 let noiseNode;
 let noiseGain;
+let audioUnlocked = false;
 
 let isPlaying = false;
 let currentRound = 0;
@@ -149,7 +152,12 @@ function initAudio() {
     return;
   }
 
-  audioCtx = new AudioContext();
+  if (!AudioContextClass) {
+    feedback.textContent = "Web Audio is not supported on this device/browser.";
+    throw new Error("Web Audio API unavailable");
+  }
+
+  audioCtx = new AudioContextClass();
 
   masterGain = audioCtx.createGain();
   masterGain.gain.value = parseInt(volumeSlider.value, 10) / 100;
@@ -168,6 +176,28 @@ function initAudio() {
   noiseNode.loop = true;
   noiseNode.connect(noiseGain);
   noiseNode.start();
+}
+
+async function ensureAudioReady() {
+  initAudio();
+
+  if (audioCtx.state !== "running") {
+    await audioCtx.resume();
+  }
+
+  if (!audioUnlocked) {
+    // iOS Safari sometimes needs a started source node during a user gesture
+    // before subsequent oscillators are audible.
+    const unlockBuffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+    const unlockSource = audioCtx.createBufferSource();
+    const unlockGain = audioCtx.createGain();
+    unlockGain.gain.value = 0.0001;
+    unlockSource.buffer = unlockBuffer;
+    unlockSource.connect(unlockGain);
+    unlockGain.connect(masterGain);
+    unlockSource.start(0);
+    audioUnlocked = true;
+  }
 }
 
 function startDrone() {
@@ -273,17 +303,10 @@ function scheduleSymbol(noteNames, startTime, duration) {
     osc.type = "triangle";
     osc.frequency.value = midiToFreq(noteName);
 
-    // 1. Start at 0
-    gain.gain.setValueAtTime(0, startTime);
-
-    // 2. Swell to peak volume
-    gain.gain.linearRampToValueAtTime(peakVolume, startTime + attack);
-
-    // 3. Sustain the note
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.exponentialRampToValueAtTime(peakVolume, startTime + attack);
     gain.gain.setValueAtTime(peakVolume, startTime + duration);
-
-    // 4. Graceful release fading out over time
-    gain.gain.linearRampToValueAtTime(0, startTime + duration + release);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration + release);
 
     osc.connect(gain);
     gain.connect(masterGain);
@@ -300,11 +323,11 @@ function wait(ms) {
 async function playPrompt() {
   if (isPlaying || currentRound >= prompts.length) return;
 
-  initAudio();
-
-  // AWAIT the resume so the audio hardware clock is accurate before scheduling
-  if (audioCtx.state === "suspended") {
-    await audioCtx.resume();
+  try {
+    await ensureAudioReady();
+  } catch (error) {
+    feedback.textContent = "Audio failed to initialize. Try Safari, disable Low Power Mode, and turn Silent Mode off.";
+    return;
   }
 
   isPlaying = true;
@@ -432,6 +455,12 @@ function populateTable() {
 if (!window.__ambientCodeInitialized) {
   window.__ambientCodeInitialized = true;
 
+  playBtn.addEventListener("touchstart", () => {
+    ensureAudioReady().catch(() => {});
+  }, { passive: true });
+  playBtn.addEventListener("pointerdown", () => {
+    ensureAudioReady().catch(() => {});
+  }, { passive: true });
   playBtn.addEventListener("click", playPrompt);
   submitBtn.addEventListener("click", submitGuess);
   replayBtn.addEventListener("click", startTest);
