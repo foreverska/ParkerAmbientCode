@@ -429,21 +429,25 @@ function populateTable() {
   });
 }
 
-playBtn.addEventListener("click", playPrompt);
-submitBtn.addEventListener("click", submitGuess);
-replayBtn.addEventListener("click", startTest);
-volumeSlider.addEventListener("input", () => {
-  if (masterGain) {
-    masterGain.gain.value = parseInt(volumeSlider.value, 10) / 100;
-  }
-});
-hardModeToggle.addEventListener("change", setNoiseForMode);
-noiseSlider.addEventListener("input", setNoiseForMode);
-guessInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    submitGuess();
-  }
-});
+if (!window.__ambientCodeInitialized) {
+  window.__ambientCodeInitialized = true;
 
-populateTable();
-startTest();
+  playBtn.addEventListener("click", playPrompt);
+  submitBtn.addEventListener("click", submitGuess);
+  replayBtn.addEventListener("click", startTest);
+  volumeSlider.addEventListener("input", () => {
+    if (masterGain) {
+      masterGain.gain.value = parseInt(volumeSlider.value, 10) / 100;
+    }
+  });
+  hardModeToggle.addEventListener("change", setNoiseForMode);
+  noiseSlider.addEventListener("input", setNoiseForMode);
+  guessInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      submitGuess();
+    }
+  });
+
+  populateTable();
+  startTest();
+}
